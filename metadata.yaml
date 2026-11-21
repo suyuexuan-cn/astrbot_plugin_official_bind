@@ -1,0 +1,11 @@
+name: astrbot_plugin_official_bind
+display_name: 官方机器人绑定与双 bot 桥接
+desc: QQ 官方机器人 ⇄ OneBot v11 一体化插件。① 身份绑定/数据迁移：官方 bot 发送 /数据迁入 生成身份码，用户粘贴给非官方 bot 完成绑定，对应关系（含群号↔群openid、QQ号↔openid）保存到 id_mapping.json，供 migrate_to_official.py 重写历史数据。群会话绑定完成后，成员再发 /数据迁入 会得到「个人身份码」，登记 QQ号 ↔ 官方 openid（users 表，按 QQ 号全局唯一、跨群通用），让记忆/好感度/签到等按用户区分的数据也能迁移。② 双 bot 同群桥接：按『统一群号+发送者+文本』内容对比去重（先到先处理，只跑一次只回一条）；非官方掉线时官方端接管入口，@官方机器人由官方独占处理；非官方 bot 的群回复统一改由官方机器人代发（被动 msg_id→主动→退回，三级优先），失败自动退回。官方适配器 webhook/websocket 互切导致平台 id 变更时，自动迁移已有绑定。群映射直接取内存绑定记录，绑定完成即刻生效。默认屏蔽官方 bot 在 OneBot 侧的 UIN，避免它的身份码说明回灌后被误当成用户绑定，并自动学习与清理历史误绑。
+short_desc: 身份/个人 id 绑定与数据迁移 + 同群双 bot 内容对比去重与回复转发
+help: 在官方机器人的群或私聊中发送 /数据迁入，把带身份码的说明消息发给非官方 bot（群数据发群、个人数据私聊）即可完成绑定；群绑定完成后，成员再发一次 /数据迁入 可登记个人 id（QQ号 ↔ 官方 openid），openid 按用户固定、跨群通用，一次绑定全部群生效。之后双 bot 同群按内容对比自动去重（只处理一次），非官方 bot 的群回复由官方 bot 代发：优先用 5 分钟内的 msg_id 被动回复，超时转主动消息，都失败退回非官方；@官方机器人由官方自己回，非官方掉线时官方接管入口。v2.2 起支持群成员个人绑定，迁移脚本加 --user-ids 可改写消息历史里的 sender_id。管理员可用 /绑定列表（含个人映射）、/解绑（支持按 QQ 号）、/导出映射（同时导出 user_mapping csv）、/转发状态 管理。需要官方机器人开通群聊主动消息权限。本插件已合并原 astrbot_plugin_reply_forward，不要重复安装该插件。
+version: v2.4.0
+author: yuexuan
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - qq_official_webhook

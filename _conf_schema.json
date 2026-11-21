@@ -1,0 +1,104 @@
+{
+    "code_expire_minutes": {
+        "description": "身份码有效期（分钟）",
+        "hint": "身份码生成后超过该时间未完成绑定即作废，需要重新生成",
+        "type": "int",
+        "default": 15
+    },
+    "code_length": {
+        "description": "身份码长度",
+        "hint": "md5 摘要的截取位数，6-16，越大越不容易碰撞",
+        "type": "int",
+        "default": 8
+    },
+    "admin_only_bind": {
+        "description": "仅管理员可生成身份码",
+        "hint": "开启后普通用户发送「数据迁入」会被拒绝，防止群成员乱刷",
+        "type": "bool",
+        "default": false
+    },
+    "enable_member_bind": {
+        "description": "允许群成员绑定个人 id",
+        "hint": "群会话绑定完成后，任何成员再发送「数据迁入」会得到一张个人身份码，粘贴到非官方 bot 后登记 QQ号 ↔ 官方 openid（写入 id_mapping.json 的 users 表），用于迁移按用户区分的记忆/好感度/签到等数据。官方 openid 按用户固定、跨群通用，一次绑定全部群生效；按 QQ 号全局唯一，重复绑定只更新。关闭后群绑定过就一律提示「已完成绑定」",
+        "type": "bool",
+        "default": true
+    },
+    "onebot_platform_names": {
+        "description": "非官方 bot 适配器名",
+        "hint": "OneBot v11 适配器名称，逗号分隔。身份码在这边粘贴完成绑定；同群时这边收到的群消息由本插件处理、回复转由官方 bot 代发",
+        "type": "string",
+        "default": "aiocqhttp"
+    },
+    "official_platform_names": {
+        "description": "官方 bot 适配器名",
+        "hint": "QQ 官方机器人适配器名称，逗号分隔。身份码在这边生成；同群时这边重复收到的群消息会被去重（官方独占的群不受影响）",
+        "type": "string",
+        "default": "qq_official,qq_official_webhook"
+    },
+    "enable_forward": {
+        "description": "同群双 bot 桥接总开关",
+        "hint": "开启后：非官方端处理的群回复改由官方机器人代发（失败/未就绪自动退回非官方），且两端重复消息按内容对比去重。关闭后插件只保留身份绑定/数据迁移，桥接送发的三个发送优先级（被动→主动→非官方）全部停用",
+        "type": "bool",
+        "default": true
+    },
+    "enable_dedup": {
+        "description": "启用跨端内容对比去重（强烈建议开启）",
+        "hint": "双 bot 同群时同一条用户消息会被两端各收一次。开启后按『统一群号+发送者+文本』做内容对比，先到者处理、后到者静默，保证只跑一次只回一条。关闭此开关会让两端都处理（双跑两条），是本插件去重失效最常见的原因，除非你清楚后果否则勿关",
+        "type": "bool",
+        "default": true
+    },
+    "drop_self_messages": {
+        "description": "丢弃非官方 bot 的自身消息回灌",
+        "hint": "NapCat 开启 report-self-message 时，非官方 bot 自己发出的群消息会作为新事件回灌，造成自问自答。开启后在事件进管线前直接丢弃这类自身消息；与官方 bot 的回环过滤互相独立",
+        "type": "bool",
+        "default": true
+    },
+    "intercept_direct_sends": {
+        "description": "拦截协议端直发并转官方代发",
+        "hint": "部分插件（如 gscore_adapter）绕过 AstrBot 管线直接调 OneBot API 发包，发送前钩子看不到。开启后在协议端出口兜底，把这类群消息也改由官方 bot 代发（同样走被动→主动优先级），失败自动退回原路径",
+        "type": "bool",
+        "default": true
+    },
+    "official_only_commands": {
+        "description": "仅由官方端执行的指令",
+        "hint": "逗号分隔。这些指令在官方端放行、非官方端让位丢弃，保证只执行一次（默认：生成身份码的 /数据迁入）。它优先于内容对比去重；其余指令按先到先得处理，回复统一由官方 bot 发出",
+        "type": "string",
+        "default": "数据迁入"
+    },
+    "ignore_sender_ids": {
+        "description": "官方 bot 在非官方侧的 UIN（回环与 @让位依据）",
+        "hint": "逗号分隔。官方机器人在 NapCat 侧显示的 QQ 号/UIN（请填你自己的；留空时插件会从非官方端 @官方bot 的消息自动学习）。作用有三：① 拦截官方代发消息被非官方端再次收到的回环；② 防止官方 bot 自己发的身份码说明被当成用户粘贴而误绑定；③ 非官方端识别 @这个 UIN 的消息时主动让位给官方端独占处理。换官方 bot 时追加新 UIN；插件也会从『非官方端 @官方bot 发 /数据迁入』自动学习",
+        "type": "string",
+        "default": ""
+    },
+    "echo_guard_seconds": {
+        "description": "代发回环防护窗口（秒）",
+        "hint": "官方 bot 代发的消息会被同群非官方端再收到。窗口内与本插件刚代发出去的文本高度相似的群消息会被静默，避免循环回复；0=关闭。与 ignore_sender_ids 配合使用：后者按 UIN 挡、本项按文本指纹挡",
+        "type": "int",
+        "default": 10
+    },
+    "enable_official_fallback": {
+        "description": "官方端备用入口（非官方掉线时接管）",
+        "hint": "内容对比去重下先到先处理。非官方机器人掉线时只剩官方那份消息，官方端自动认领并回复，群不至于失声（无需主动探测 NapCat 在线状态）。关闭后官方端只做回复出口，不接管入口",
+        "type": "bool",
+        "default": true
+    },
+    "message_dedup_window_seconds": {
+        "description": "内容对比去重窗口（秒）",
+        "hint": "同群、同发送者、同文本在该窗口内只处理一次（两端谁先到谁处理）。非官方本地端通常比官方 Webhook 快约 1 秒；调大更容易拦住官方后到的重复，但同一人短时间内连发两条完全相同内容可能被合并。默认 1.5 秒",
+        "type": "float",
+        "default": 1.5
+    },
+    "passive_reply_window_seconds": {
+        "description": "被动回复(msg_id)有效期（秒）",
+        "hint": "官方发送优先级：窗口内用该群最近消息的 msg_id 走被动回复（不占主动额度），超时或失败改用主动群消息，仍失败退回非官方。默认 300 秒（5 分钟）；每个群独立记录各自的 msg_id 与时间，互不干扰",
+        "type": "float",
+        "default": 300
+    },
+    "verbose_debug": {
+        "description": "输出去重调试探针日志",
+        "hint": "排查去重失效用。开启后把 [DEBUG-dedup]/[DEBUG-claim] 探针以 WARNING 级别打到日志；关闭时为 DEBUG 级别（需把 AstrBot 日志级别设为 DEBUG 才可见）。注意：正式运行建议关闭以免刷屏；本插件另有一条『官方机器人收到群消息』INFO 日志始终可见，不受此项影响",
+        "type": "bool",
+        "default": false
+    }
+}
