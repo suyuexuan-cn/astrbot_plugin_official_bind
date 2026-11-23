@@ -55,8 +55,21 @@ def test_onebot_at_official_yields():
     assert p._onebot_at_official(AtEv()) is True
     print("PASS test_onebot_at_official_yields")
 
+def test_streaming_result_guard():
+    """流式结果（按枚举名）应被 _is_streaming_result 识别，普通结果不是。"""
+    p = base.make_plugin()
+    class R:
+        def __init__(self, t):
+            self.result_content_type = base.types.SimpleNamespace(name=t)
+    assert p._is_streaming_result(R("STREAMING_RESULT")) is True
+    assert p._is_streaming_result(R("STREAMING_FINISH")) is True
+    assert p._is_streaming_result(R("LLM_RESULT")) is False
+    assert p._is_streaming_result(R(None)) is False
+    print("PASS test_streaming_result_guard")
+
 if __name__ == "__main__":
     test_per_group_msg_id()
     test_window()
     test_onebot_at_official_yields()
+    test_streaming_result_guard()
     print("ALL PRIORITY TESTS PASSED")

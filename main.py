@@ -426,6 +426,12 @@ class OfficialBindPlugin(Star):
                 self._learned_ignored.add(qq)
                 logger.info(f"[official_bind] 自动识别官方 bot 的 OneBot 账号：{qq}")
 
+    @staticmethod
+    def _is_streaming_result(result: object) -> bool:
+        """结果是否为流式（STREAMING_RESULT/STREAMING_FINISH），按枚举名判断以免 import 私有模块。"""
+        name = getattr(getattr(result, "result_content_type", None), "name", "")
+        return name in {"STREAMING_RESULT", "STREAMING_FINISH"}
+
     def _echo_seconds(self) -> int:
         try:
             return max(0, int(self.config.get("echo_guard_seconds", 10)))
@@ -1888,6 +1894,11 @@ class OfficialBindPlugin(Star):
 
         result = event.get_result()
         if result is None or not result.chain:
+            return
+        # 流式回复已由非官方端逐段发出，核心对 STREAMING_FINISH 不再二次
+        # 发送；若在这里再代发一遍就是双份消息，所以整体跳过。
+        if self._is_streaming_result(result):
+            self._note_skip("流式回复已在原端发出，跳过代发", event.unified_msg_origin)
             return
 
         mapping = self._group_map()
