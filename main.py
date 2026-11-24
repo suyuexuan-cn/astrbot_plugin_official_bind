@@ -83,6 +83,7 @@ DEDUP_PRIORITY = 9999  # 必须高于所有业务 handler，才能在最早期�
 # 平台补丁登记表：key 为对象 id，插件重载时只替换 plugin 引用，不重复套娃
 _COMMIT_PATCHES: dict[int, dict] = {}
 _SEND_PATCHES: dict[int, dict] = {}
+_OFFICIAL_SEND_PATCHES: dict[int, dict] = {}
 
 # 转发中的重入保护：避免「官方 umo 恰好也指向 aiocqhttp」时自己转发给自己
 _FORWARD_GUARD: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -183,7 +184,7 @@ class _DedupFilter(filter.CustomFilter):
     PLUGIN_NAME,
     "yuexuan",
     "QQ 官方机器人 ⇄ OneBot v11：身份绑定/数据迁移 + 同群双 bot 接收去重与回复转发",
-    "2.4.0",
+    "2.5.0",
 )
 class OfficialBindPlugin(Star):
     """身份绑定 + 双 bot 同群桥接（官方端发码，非官方端收码并统一回复出口）。"""
@@ -879,6 +880,8 @@ class OfficialBindPlugin(Star):
             if name in self._official_type_names() or name in self._onebot_names():
                 self._install_commit_guard(platform)
                 self._install_send_guard(platform)
+                if name in self._official_type_names():
+                    self._install_official_send_guard(platform)
 
     def _install_commit_guard(self, platform) -> bool:
         """包装 platform.commit_event，在事件进入管线之前做丢弃判断。
@@ -982,6 +985,10 @@ class OfficialBindPlugin(Star):
                 )
                 return True
 
+        # 官方端群消息一律先记 msg_id：被动回复凭据与绑定/桥接开关都无关。
+        if is_official:
+            self._remember_official_msg_id(event)
+
         if not self._active or not self._forward_enabled():
             return False
 
@@ -1038,8 +1045,6 @@ class OfficialBindPlugin(Star):
         # 认领成功：打标记，管线内兜底过滤器据此识别「本端已认领」。
         event.set_extra("official_bind_claimed", True)
         # 记录官方群 msg_id + 时间，供「5分钟内被动回复」使用
-        if is_official:
-            self._remember_official_msg_id(event)
         # 官方端：@消息由官方自行处理，普通消息视为接管。
         if is_official:
             if self._is_at_official(event):
@@ -1053,6 +1058,76 @@ class OfficialBindPlugin(Star):
     # ------------------------------------------------------------------
     # 平台补丁 2：协议端直发兜底
     # ------------------------------------------------------------------
+
+    def _install_official_send_guard(self, platform) -> bool:
+        """包装官方平台的 send_by_session：让群消息优先走 msg_id 被动回复。
+
+        gscore_adapter 等插件会直接 context.send_message(官方umo, ...)，绕过
+        本插件的 _send_official_with_priority。而官方适配器对群消息的
+        _allow_group_proactive_send 恒为 True，等于永远走主动消息——一旦
+        「主动消息无权限」就整条发不出去。这里在出口统一兜一层：该群有
+        5 分钟内的 msg_id 就临时关掉主动开关，强制走被动回复。
+        """
+        key = id(platform)
+        if key in _OFFICIAL_SEND_PATCHES:
+            _OFFICIAL_SEND_PATCHES[key]["plugin"] = self
+            return False
+        orig = getattr(platform, "send_by_session", None)
+        if orig is None or getattr(orig, "_official_bind_patched", False):
+            return False
+
+        async def _send_by_session(session, message_chain, _orig=orig, _key=key):
+            rec2 = _OFFICIAL_SEND_PATCHES.get(_key)
+            plugin = rec2.get("plugin") if rec2 else None
+            if plugin is not None and plugin._forward_enabled():
+                try:
+                    sid = str(getattr(session, "session_id", "") or "").rsplit("_", 1)[-1]
+                    seen = plugin._official_msg_id_seen.get(sid)
+                    fresh = bool(
+                        seen and time.time() - seen[1] <= plugin._passive_reply_window()
+                    )
+                    # message_type 是 MessageType 枚举（不是字符串），统一取 .value 比较
+                    _mtype = getattr(session, "message_type", "")
+                    _mtype = getattr(_mtype, "value", _mtype)
+                    logger.info("[GUARD] sid=" + str(sid) + " fresh=" + str(fresh) + " mtype=" + str(_mtype) + " seen=" + str(bool(seen)))
+                    if fresh and _mtype == "GroupMessage":
+                        last_ids = getattr(platform, "_session_last_message_id", None)
+                        old_ids = dict(last_ids) if isinstance(last_ids, dict) else {}
+                        old_proactive = getattr(
+                            platform, "_allow_group_proactive_send", True
+                        )
+                        try:
+                            if isinstance(last_ids, dict):
+                                last_ids[sid] = seen[0]
+                            platform._allow_group_proactive_send = False
+                            return await _orig(session, message_chain)
+                        finally:
+                            platform._allow_group_proactive_send = old_proactive
+                            if isinstance(last_ids, dict):
+                                if sid in old_ids:
+                                    last_ids[sid] = old_ids[sid]
+                                else:
+                                    last_ids.pop(sid, None)
+                except BaseException as e:  # noqa: BLE001 守卫失败必须放行
+                    logger.debug(f"[official_bind] 官方被动守卫异常，按原路径发送: {e}")
+            return await _orig(session, message_chain)
+
+        try:
+            _send_by_session._official_bind_patched = True  # type: ignore[attr-defined]
+            platform.send_by_session = _send_by_session
+        except BaseException as e:  # noqa: BLE001 挂不上就退化为原行为
+            logger.warning(f"[official_bind] 无法挂载官方被动守卫: {e}")
+            return False
+        _OFFICIAL_SEND_PATCHES[key] = {
+            "platform": platform,
+            "orig": orig,
+            "wrapper": _send_by_session,
+            "plugin": self,
+        }
+        logger.info(
+            f"[official_bind] 已在官方平台挂载被动回复守卫：{platform.meta().id}"
+        )
+        return True
 
     def _install_send_guard(self, platform) -> bool:
         """包装 aiocqhttp 客户端的 send_group_msg。
@@ -1095,6 +1170,11 @@ class OfficialBindPlugin(Star):
                     handled = None
                 if handled is not None:
                     return handled
+            # 退回时走 bot 的“当前”属性：后加载的插件（如 send_blocker）可能包在我们
+            # 外层，直接调闭包里的 orig 会绕过它的拦截。
+            current = getattr(bot, "send_group_msg", None)
+            if current is not None and current is not _send_group_msg:
+                return await current(*args, **kwargs)
             return await orig(*args, **kwargs)
 
         try:
@@ -1435,6 +1515,7 @@ class OfficialBindPlugin(Star):
             )
             if sid and msg_id:
                 self._official_msg_id_seen[sid] = (msg_id, time.time())
+                logger.info("[REC] sid=" + str(sid) + " msg_id=" + str(msg_id)[:24])
         except BaseException as e:  # noqa: BLE001 记录失败不影响主流程
             logger.debug(f"[official_bind] 记录官方 msg_id 失败: {e}")
 
@@ -1932,6 +2013,10 @@ class OfficialBindPlugin(Star):
             self._last_skip = f"官方端发送异常：{e}"
             self._last_skip_at = time.time()
             logger.warning(f"[official_bind] 官方端转发失败，退回原路径: {e}")
+            logger.warning(
+                "[official_bind] 注意：若已启用 astrbot_plugin_send_blocker，"
+                "这条退回消息将被静默拦截、不会发出"
+            )
             return
 
         if not ok:
@@ -2302,6 +2387,17 @@ class OfficialBindPlugin(Star):
             except BaseException:  # noqa: BLE001,S110 客户端可能已经断开
                 pass
             _SEND_PATCHES.pop(key, None)
+
+        for key, rec in list(_OFFICIAL_SEND_PATCHES.items()):
+            if rec.get("plugin") is not self:
+                continue
+            try:
+                platform = rec["platform"]
+                if getattr(platform, "send_by_session", None) is rec.get("wrapper"):
+                    platform.send_by_session = rec["orig"]
+            except BaseException:  # noqa: BLE001,S110 平台可能已销毁
+                pass
+            _OFFICIAL_SEND_PATCHES.pop(key, None)
 
     async def terminate(self):
         """插件卸载/停用时落盘一次并清理运行时状态。"""
